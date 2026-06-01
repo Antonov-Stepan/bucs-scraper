@@ -246,7 +246,7 @@ async function scrapeLusl(luslUrl, imperialName) {
 
 app.get('/health', (req, res) => res.json({ ok: true }));
 
-// Debug route — tests whether Chromium can launch at all
+// Tests Chromium launch
 app.get('/debug', async (req, res) => {
   try {
     const browser = await launchBrowser();
@@ -254,9 +254,45 @@ app.get('/debug', async (req, res) => {
     await page.goto('https://example.com', { waitUntil: 'domcontentloaded', timeout: 15000 });
     const title = await page.title();
     await browser.close();
-    res.json({ ok: true, title, executablePath: process.env.PUPPETEER_EXECUTABLE_PATH });
+    res.json({ ok: true, title, chromiumPath: CHROMIUM_PATH });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message, executablePath: process.env.PUPPETEER_EXECUTABLE_PATH });
+    res.status(500).json({ ok: false, error: e.message, chromiumPath: CHROMIUM_PATH });
+  }
+});
+
+// Dumps BUCS Play page structure so we can find the right selectors
+app.get('/debug-bucs', async (req, res) => {
+  const url = 'https://bucs.playwaze.com/bucs-football-25-26/cdkrbrt3dcl/league-display/leagues/i5p7xbti8m';
+  let browser;
+  try {
+    browser = await launchBrowser();
+    const page = await browser.newPage();
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36');
+    await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+    await new Promise(r => setTimeout(r, 3000));
+
+    const info = await page.evaluate(() => {
+      const buttons = Array.from(document.querySelectorAll('button, [role="button"]'))
+        .map(el => ({ text: el.innerText?.trim().slice(0, 80), class: el.className?.slice(0, 80) }))
+        .filter(b => b.text);
+      const selects = Array.from(document.querySelectorAll('select'))
+        .map(sel => ({ id: sel.id, options: Array.from(sel.options).map(o => o.text.trim()) }));
+      const links = Array.from(document.querySelectorAll('a'))
+        .map(a => ({ text: a.innerText?.trim().slice(0, 60), href: a.href?.slice(0, 100) }))
+        .filter(a => a.text && a.text.toLowerCase().includes('division') || a.text?.toLowerCase().includes('tier'));
+      const bodySnippet = document.body.innerText.slice(0, 4000);
+      const tables = Array.from(document.querySelectorAll('table')).map(t => ({
+        headers: Array.from(t.querySelectorAll('th')).map(th => th.innerText.trim()),
+        rows: t.querySelectorAll('tbody tr').length,
+      }));
+      return { buttons: buttons.slice(0, 50), selects, links: links.slice(0, 20), tables, bodySnippet };
+    });
+
+    await browser.close();
+    res.json({ ok: true, url, ...info });
+  } catch (e) {
+    if (browser) await browser.close().catch(() => {});
+    res.status(500).json({ ok: false, error: e.message });
   }
 });
 
