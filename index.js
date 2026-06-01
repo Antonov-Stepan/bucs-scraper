@@ -300,7 +300,7 @@ app.get('/debug-bucs', async (req, res) => {
 // GET /tables
 app.get('/tables', async (req, res) => {
   const BUCS_BASE =
-    'https://bucs.playwaze.com/bucs-football-25-26/cdkrbrt3dcl/league-display/leagues';
+    'https://bucs.playwaze.com/bucs-football-25-26/cdkrbrt3dcl/league-display/leagues/i5p7xbti8m';
 
   // ── Update these URLs once you confirm the LUSL division page URLs ──────────
   const LUSL_PREMIER  = 'https://www.lusl.co.uk/league-table/premier-division';
