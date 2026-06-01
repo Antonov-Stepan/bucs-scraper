@@ -1,7 +1,8 @@
 const express = require('express');
-const puppeteer = require('puppeteer-core');
-const { execSync } = require('child_process');
+const puppeteer = require('puppeteer'); // Clean import of full puppeteer
 
+const app = express();
+const PORT = process.env.PORT || 3000;
 // Find Chromium wherever it lives on this machine
 function findChromium() {
   if (process.env.PUPPETEER_EXECUTABLE_PATH) {
@@ -50,11 +51,10 @@ function setCache(key, data) {
 }
 
 // ─── Shared browser launcher ──────────────────────────────────────────────────
+// ─── Shared browser launcher ──────────────────────────────────────────────────
 async function launchBrowser() {
-  if (!CHROMIUM_PATH) throw new Error('No Chromium executable found on this system');
-  return puppeteer.launch({
+  const options = {
     headless: true,
-    executablePath: CHROMIUM_PATH,
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
@@ -62,7 +62,15 @@ async function launchBrowser() {
       '--disable-gpu',
       '--single-process',
     ],
-  });
+  };
+
+  // If you ever choose to manually override the binary path via environment variables, 
+  // this configuration will respect it. Otherwise, it uses the auto-downloaded version.
+  if (process.env.PUPPETEER_EXECUTABLE_PATH) {
+    options.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
+  }
+
+  return puppeteer.launch(options);
 }
 
 // ─── BUCS Play scraper ────────────────────────────────────────────────────────
@@ -254,9 +262,9 @@ app.get('/debug', async (req, res) => {
     await page.goto('https://example.com', { waitUntil: 'domcontentloaded', timeout: 15000 });
     const title = await page.title();
     await browser.close();
-    res.json({ ok: true, title, chromiumPath: CHROMIUM_PATH });
+    res.json({ ok: true, title, chromiumPath: process.env.PUPPETEER_EXECUTABLE_PATH || 'Auto-bundled Chrome' });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message, chromiumPath: CHROMIUM_PATH });
+    res.status(500).json({ ok: false, error: e.message, chromiumPath: process.env.PUPPETEER_EXECUTABLE_PATH || 'Failed Initialization' });
   }
 });
 
