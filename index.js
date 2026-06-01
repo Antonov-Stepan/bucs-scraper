@@ -214,6 +214,20 @@ async function scrapeLusl(luslUrl, imperialName) {
 
 app.get('/health', (req, res) => res.json({ ok: true }));
 
+// Debug route — tests whether Chromium can launch at all
+app.get('/debug', async (req, res) => {
+  try {
+    const browser = await launchBrowser();
+    const page = await browser.newPage();
+    await page.goto('https://example.com', { waitUntil: 'domcontentloaded', timeout: 15000 });
+    const title = await page.title();
+    await browser.close();
+    res.json({ ok: true, title, executablePath: process.env.PUPPETEER_EXECUTABLE_PATH });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message, executablePath: process.env.PUPPETEER_EXECUTABLE_PATH });
+  }
+});
+
 // Returns all three teams' tables in one request so the app makes one fetch
 // GET /tables
 app.get('/tables', async (req, res) => {
@@ -230,34 +244,32 @@ app.get('/tables', async (req, res) => {
   const BUCS_URL = `${BUCS_BASE}`;
   // ───────────────────────────────────────────────────────────────────────────
 
-  try {
-    const [
-      m1Bucs, m1Lusl,
-      m2Bucs, m2Lusl,
-      m3Bucs, m3Lusl,
-    ] = await Promise.all([
-      scrapeBucs(BUCS_URL, 'SE 2B', 'Imperial Medics 1'),
-      scrapeLusl(LUSL_PREMIER, 'Imperial Medics 1'),
+  const safe = async (fn) => {
+    try { return await fn(); }
+    catch (e) { console.error('Scrape error:', e.message); return []; }
+  };
 
-      scrapeBucs(BUCS_URL, 'SE 5C', 'Imperial Medics 2'),
-      scrapeLusl(LUSL_DIV1, 'Imperial Medics 2'),
+  const [
+    m1Bucs, m1Lusl,
+    m2Bucs, m2Lusl,
+    m3Bucs, m3Lusl,
+  ] = await Promise.all([
+    safe(() => scrapeBucs(BUCS_URL, 'SE 2B', 'Imperial Medics 1')),
+    safe(() => scrapeLusl(LUSL_PREMIER, 'Imperial Medics 1')),
+    safe(() => scrapeBucs(BUCS_URL, 'SE 5C', 'Imperial Medics 2')),
+    safe(() => scrapeLusl(LUSL_DIV1, 'Imperial Medics 2')),
+    safe(() => scrapeBucs(BUCS_URL, 'SE 7',  'Imperial Medics 3')),
+    safe(() => scrapeLusl(LUSL_DIV3, 'Imperial Medics 3')),
+  ]);
 
-      scrapeBucs(BUCS_URL, 'SE 7',  'Imperial Medics 3'),
-      scrapeLusl(LUSL_DIV3, 'Imperial Medics 3'),
-    ]);
-
-    res.json({
-      lastUpdated: new Date().toISOString(),
-      teams: [
-        { bucs: m1Bucs, lusl: m1Lusl },
-        { bucs: m2Bucs, lusl: m2Lusl },
-        { bucs: m3Bucs, lusl: m3Lusl },
-      ],
-    });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: err.message });
-  }
+  res.json({
+    lastUpdated: new Date().toISOString(),
+    teams: [
+      { bucs: m1Bucs, lusl: m1Lusl },
+      { bucs: m2Bucs, lusl: m2Lusl },
+      { bucs: m3Bucs, lusl: m3Lusl },
+    ],
+  });
 });
 
 app.listen(PORT, () => console.log(`bucs-scraper listening on port ${PORT}`));
