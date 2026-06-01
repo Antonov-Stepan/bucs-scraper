@@ -1,5 +1,5 @@
 const express = require('express');
-const puppeteer = require('puppeteer');
+const puppeteer = require('puppeteer-core');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -22,7 +22,8 @@ function setCache(key, data) {
 // ─── Shared browser launcher ──────────────────────────────────────────────────
 async function launchBrowser() {
   return puppeteer.launch({
-    headless: 'new',
+    headless: true,
+    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
