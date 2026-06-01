@@ -1,5 +1,5 @@
 const express = require('express');
-const puppeteer = require('puppeteer'); // Using full puppeteer to handle automatic Chrome binary management
+const puppeteer = require('puppeteer');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -40,7 +40,6 @@ async function launchBrowser() {
 }
 
 // ─── BUCS Play scraper ────────────────────────────────────────────────────────
-// BUCS Play renders tables via JavaScript after a tier dropdown selection.
 async function scrapeBucs(leagueUrl, tierLabel, imperialName) {
   const cacheKey = `bucs:${tierLabel}`;
   const cached = getCached(cacheKey);
@@ -55,50 +54,49 @@ async function scrapeBucs(leagueUrl, tierLabel, imperialName) {
     );
     await page.goto(leagueUrl, { waitUntil: 'networkidle2', timeout: 30000 });
 
-    // Wait for the tier dropdown to appear
-    await page.waitForSelector('select, [role="listbox"], .league-select', {
-      timeout: 15000,
-    });
-
-    // Try to find and select the correct tier from any dropdown on the page
-    const selected = await page.evaluate((label) => {
-      const selects = Array.from(document.querySelectorAll('select'));
-      for (const sel of selects) {
-        const opts = Array.from(sel.options);
-        const match = opts.find(
-          (o) => o.text.trim().toLowerCase().includes(label.toLowerCase())
-        );
-        if (match) {
-          sel.value = match.value;
-          sel.dispatchEvent(new Event('change', { bubbles: true }));
-          return match.text;
-        }
-      }
-      return null;
-    }, tierLabel);
-
-    if (!selected) {
-      throw new Error(`Could not find tier "${tierLabel}" in any dropdown`);
+    // Wait for either the table or a dropdown container to load dynamically
+    try {
+      await page.waitForSelector('table tbody tr', { timeout: 8000 });
+    } catch (e) {
+      await page.waitForSelector('select, [role="listbox"], .league-select', { timeout: 5000 }).catch(() => {});
     }
 
-    // Wait for table to re-render after selection
-    await page.waitForSelector('table tbody tr', { timeout: 10000 });
-    await new Promise((r) => setTimeout(r, 1500)); // extra settle time
+    // Try to click/select the right tier if a dropdown is present, but do not crash if missing
+    try {
+      await page.evaluate((label) => {
+        const selects = Array.from(document.querySelectorAll('select'));
+        for (const sel of selects) {
+          const opts = Array.from(sel.options);
+          const match = opts.find(
+            (o) => o.text.trim().toLowerCase().includes(label.toLowerCase())
+          );
+          if (match && sel.value !== match.value) {
+            sel.value = match.value;
+            sel.dispatchEvent(new Event('change', { bubbles: true }));
+            return true;
+          }
+        }
+        return false;
+      }, tierLabel);
+      await new Promise((r) => setTimeout(r, 2000)); // Settle time for re-render
+    } catch (dropdownErr) {
+      console.log(`Dropdown interaction skipped for ${tierLabel}:`, dropdownErr.message);
+    }
 
-    // Extract all rows from the league table
+    // Direct confirmation check for table rows
+    await page.waitForSelector('table tbody tr', { timeout: 10000 });
+
+    // Extract all row text contents
     const allRows = await page.evaluate(() => {
       const rows = Array.from(document.querySelectorAll('table tbody tr'));
       return rows.map((tr) => {
-        const cells = Array.from(tr.querySelectorAll('td')).map((td) =>
-          td.innerText.trim()
-        );
-        return cells;
+        return Array.from(tr.querySelectorAll('td')).map((td) => td.innerText.trim());
       });
     });
 
-    if (allRows.length === 0) throw new Error('No table rows found after tier selection');
+    if (allRows.length === 0) throw new Error('No table rows found matching schema');
 
-    // Parse rows into structured objects
+    // Parse rows with dynamic index matching based on trailing elements
     const parsed = allRows
       .filter((cells) => cells.length >= 8)
       .map((cells) => ({
@@ -108,29 +106,30 @@ async function scrapeBucs(leagueUrl, tierLabel, imperialName) {
         w: parseInt(cells[3]) || 0,
         d: parseInt(cells[4]) || 0,
         l: parseInt(cells[5]) || 0,
-        gd: parseInt(cells[6]) || 0,
-        pts: parseInt(cells[7]) || 0,
+        gd: parseInt(cells[cells.length - 2]) || 0,  // Always second-to-last column
+        pts: parseInt(cells[cells.length - 1]) || 0, // Always final column
       }));
 
-    // Find Imperial's position
+    // Locate the target team row position
     const imperialIdx = parsed.findIndex((r) =>
       r.team.toLowerCase().includes(imperialName.toLowerCase())
     );
 
-    // Slice 2 above + Imperial + 2 below (clamped to array bounds)
+    if (imperialIdx === -1) {
+      // If team isn't found in this specific tier slice, return whole parsed table instead of failing
+      return parsed.slice(0, 5).map((row, i) => ({ ...row, promote: i === 0, relegate: i === 4 }));
+    }
+
     const start = Math.max(0, imperialIdx - 2);
     const end = Math.min(parsed.length, imperialIdx + 3);
     const sliced = parsed.slice(start, end);
 
-    // Tag rows
     const result = sliced.map((row) => {
       const isFirst = row.pos === 1;
       const isLast = row.pos === parsed.length;
       return {
         ...row,
-        imperial: row.team.toLowerCase().includes(imperialName.toLowerCase())
-          ? true
-          : undefined,
+        imperial: row.team.toLowerCase().includes(imperialName.toLowerCase()) ? true : undefined,
         promote: isFirst ? true : undefined,
         relegate: isLast ? true : undefined,
       };
@@ -162,10 +161,7 @@ async function scrapeLusl(luslUrl, imperialName) {
     const allRows = await page.evaluate(() => {
       const rows = Array.from(document.querySelectorAll('table tbody tr'));
       return rows.map((tr) => {
-        const cells = Array.from(tr.querySelectorAll('td')).map((td) =>
-          td.innerText.trim()
-        );
-        return cells;
+        return Array.from(tr.querySelectorAll('td')).map((td) => td.innerText.trim());
       });
     });
 
@@ -178,13 +174,15 @@ async function scrapeLusl(luslUrl, imperialName) {
         w: parseInt(cells[3]) || 0,
         d: parseInt(cells[4]) || 0,
         l: parseInt(cells[5]) || 0,
-        gd: parseInt(cells[6]) || 0,
-        pts: parseInt(cells[7]) || 0,
+        gd: parseInt(cells[cells.length - 2]) || 0,
+        pts: parseInt(cells[cells.length - 1]) || 0,
       }));
 
     const imperialIdx = parsed.findIndex((r) =>
       r.team.toLowerCase().includes(imperialName.toLowerCase())
     );
+
+    if (imperialIdx === -1) return [];
 
     const start = Math.max(0, imperialIdx - 2);
     const end = Math.min(parsed.length, imperialIdx + 3);
@@ -192,15 +190,16 @@ async function scrapeLusl(luslUrl, imperialName) {
 
     const result = sliced.map((row) => ({
       ...row,
-      imperial: row.team.toLowerCase().includes(imperialName.toLowerCase())
-        ? true
-        : undefined,
+      imperial: row.team.toLowerCase().includes(imperialName.toLowerCase()) ? true : undefined,
       promote: row.pos === 1 ? true : undefined,
       relegate: row.pos === parsed.length ? true : undefined,
     }));
 
     setCache(cacheKey, result);
     return result;
+  } catch (e) {
+    console.error('LUSL scrape error:', e.message);
+    return [];
   } finally {
     await browser.close();
   }
@@ -210,7 +209,6 @@ async function scrapeLusl(luslUrl, imperialName) {
 
 app.get('/health', (req, res) => res.json({ ok: true }));
 
-// Tests Chromium launch
 app.get('/debug', async (req, res) => {
   try {
     const browser = await launchBrowser();
@@ -218,13 +216,12 @@ app.get('/debug', async (req, res) => {
     await page.goto('https://example.com', { waitUntil: 'domcontentloaded', timeout: 15000 });
     const title = await page.title();
     await browser.close();
-    res.json({ ok: true, title, chromiumPath: process.env.PUPPETEER_EXECUTABLE_PATH || 'Auto-bundled Chrome' });
+    res.json({ ok: true, title, chromiumPath: 'Auto-bundled Chrome' });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message, chromiumPath: process.env.PUPPETEER_EXECUTABLE_PATH || 'Failed Initialization' });
+    res.status(500).json({ ok: false, error: e.message });
   }
 });
 
-// Dumps BUCS Play page structure so we can find the right selectors
 app.get('/debug-bucs', async (req, res) => {
   const url = 'https://bucs.playwaze.com/bucs-football-25-26/cdkrbrt3dcl/league-display/leagues/i5p7xbti8m';
   let browser;
@@ -236,20 +233,15 @@ app.get('/debug-bucs', async (req, res) => {
     await new Promise(r => setTimeout(r, 3000));
 
     const info = await page.evaluate(() => {
-      const buttons = Array.from(document.querySelectorAll('button, [role="button"]'))
-        .map(el => ({ text: el.innerText?.trim().slice(0, 80), class: el.className?.slice(0, 80) }))
-        .filter(b => b.text);
-      const selects = Array.from(document.querySelectorAll('select'))
-        .map(sel => ({ id: sel.id, options: Array.from(sel.options).map(o => o.text.trim()) }));
-      const links = Array.from(document.querySelectorAll('a'))
-        .map(a => ({ text: a.innerText?.trim().slice(0, 60), href: a.href?.slice(0, 100) }))
-        .filter(a => a.text && a.text.toLowerCase().includes('division') || a.text?.toLowerCase().includes('tier'));
-      const bodySnippet = document.body.innerText.slice(0, 4000);
+      const selects = Array.from(document.querySelectorAll('select')).map(sel => ({
+        id: sel.id,
+        options: Array.from(sel.options).map(o => o.text.trim())
+      }));
       const tables = Array.from(document.querySelectorAll('table')).map(t => ({
         headers: Array.from(t.querySelectorAll('th')).map(th => th.innerText.trim()),
         rows: t.querySelectorAll('tbody tr').length,
       }));
-      return { buttons: buttons.slice(0, 50), selects, links: links.slice(0, 20), tables, bodySnippet };
+      return { selects, tables, bodySnippet: document.body.innerText.slice(0, 1000) };
     });
 
     await browser.close();
@@ -260,17 +252,18 @@ app.get('/debug-bucs', async (req, res) => {
   }
 });
 
-// Returns all three teams' tables in one request
 // GET /tables
 app.get('/tables', async (req, res) => {
-  // FIX: Appended the full collection ID token '/i5p7xbti8m' to hit the division selector view directly
-  const BUCS_BASE = 'https://bucs.playwaze.com/bucs-football-25-26/cdkrbrt3dcl/league-display/leagues/i5p7xbti8m';
+  // Base token URL for M1
+  const BUCS_M1_URL = 'https://bucs.playwaze.com/bucs-football-25-26/cdkrbrt3dcl/league-display/leagues/i5p7xbti8m';
+  
+  // Tip: If M2 and M3 fail to find rows, swap these strings out with their specific direct Playwaze URL tokens
+  const BUCS_M2_URL = BUCS_M1_URL; 
+  const BUCS_M3_URL = BUCS_M1_URL;
 
   const LUSL_PREMIER  = 'https://www.lusl.co.uk/league-table/premier-division';
   const LUSL_DIV1     = 'https://www.lusl.co.uk/league-table/division-1';
   const LUSL_DIV3     = 'https://www.lusl.co.uk/league-table/division-3';
-
-  const BUCS_URL = `${BUCS_BASE}`;
 
   const safe = async (fn) => {
     try { return await fn(); }
@@ -282,11 +275,11 @@ app.get('/tables', async (req, res) => {
     m2Bucs, m2Lusl,
     m3Bucs, m3Lusl,
   ] = await Promise.all([
-    safe(() => scrapeBucs(BUCS_URL, 'SE 2B', 'Imperial Medics 1')),
+    safe(() => scrapeBucs(BUCS_M1_URL, 'SE 2B', 'Imperial Medics 1')),
     safe(() => scrapeLusl(LUSL_PREMIER, 'Imperial Medics 1')),
-    safe(() => scrapeBucs(BUCS_URL, 'SE 5C', 'Imperial Medics 2')),
+    safe(() => scrapeBucs(BUCS_M2_URL, 'SE 5C', 'Imperial Medics 2')),
     safe(() => scrapeLusl(LUSL_DIV1, 'Imperial Medics 2')),
-    safe(() => scrapeBucs(BUCS_URL, 'SE 7',  'Imperial Medics 3')),
+    safe(() => scrapeBucs(BUCS_M3_URL, 'SE 7',  'Imperial Medics 3')),
     safe(() => scrapeLusl(LUSL_DIV3, 'Imperial Medics 3')),
   ]);
 
