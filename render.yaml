@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: bucs-scraper
+    runtime: node
+    buildCommand: npm install
+    startCommand: node index.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+    # Puppeteer needs extra memory - use at least 512MB
+    # On Render free tier this is the default, paid gives more
