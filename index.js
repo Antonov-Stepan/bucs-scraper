@@ -1,36 +1,5 @@
 const express = require('express');
-const puppeteer = require('puppeteer'); // Clean import of full puppeteer
-
-const app = express();
-const PORT = process.env.PORT || 3000;
-// Find Chromium wherever it lives on this machine
-function findChromium() {
-  if (process.env.PUPPETEER_EXECUTABLE_PATH) {
-    return process.env.PUPPETEER_EXECUTABLE_PATH;
-  }
-  const candidates = [
-    '/usr/bin/chromium',
-    '/usr/bin/chromium-browser',
-    '/usr/bin/google-chrome',
-    '/usr/bin/google-chrome-stable',
-    '/snap/bin/chromium',
-    '/usr/local/bin/chromium',
-  ];
-  for (const p of candidates) {
-    try {
-      execSync(`test -f ${p}`);
-      return p;
-    } catch {}
-  }
-  // Last resort — ask the OS
-  try { return execSync('which chromium-browser').toString().trim(); } catch {}
-  try { return execSync('which chromium').toString().trim(); } catch {}
-  try { return execSync('which google-chrome').toString().trim(); } catch {}
-  return null;
-}
-
-const CHROMIUM_PATH = findChromium();
-console.log('Chromium path:', CHROMIUM_PATH);
+const puppeteer = require('puppeteer'); // Using full puppeteer to handle automatic Chrome binary management
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -51,7 +20,6 @@ function setCache(key, data) {
 }
 
 // ─── Shared browser launcher ──────────────────────────────────────────────────
-// ─── Shared browser launcher ──────────────────────────────────────────────────
 async function launchBrowser() {
   const options = {
     headless: true,
@@ -64,8 +32,6 @@ async function launchBrowser() {
     ],
   };
 
-  // If you ever choose to manually override the binary path via environment variables, 
-  // this configuration will respect it. Otherwise, it uses the auto-downloaded version.
   if (process.env.PUPPETEER_EXECUTABLE_PATH) {
     options.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
   }
@@ -75,12 +41,6 @@ async function launchBrowser() {
 
 // ─── BUCS Play scraper ────────────────────────────────────────────────────────
 // BUCS Play renders tables via JavaScript after a tier dropdown selection.
-// We open the page, wait for the dropdown, select the right tier, then
-// extract the table rows.
-//
-// leagueUrl  — base BUCS Play competition URL
-// tierLabel  — exact text of the dropdown option, e.g. "SE 2B"
-// imperialName — substring to match Imperial's row (e.g. "Imperial")
 async function scrapeBucs(leagueUrl, tierLabel, imperialName) {
   const cacheKey = `bucs:${tierLabel}`;
   const cached = getCached(cacheKey);
@@ -163,7 +123,7 @@ async function scrapeBucs(leagueUrl, tierLabel, imperialName) {
     const sliced = parsed.slice(start, end);
 
     // Tag rows
-    const result = sliced.map((row, i) => {
+    const result = sliced.map((row) => {
       const isFirst = row.pos === 1;
       const isLast = row.pos === parsed.length;
       return {
@@ -184,10 +144,6 @@ async function scrapeBucs(leagueUrl, tierLabel, imperialName) {
 }
 
 // ─── LUSL scraper ─────────────────────────────────────────────────────────────
-// LUSL uses a simpler static or server-rendered table page.
-//
-// luslUrl      — direct URL to the division table page
-// imperialName — substring to match Imperial's row
 async function scrapeLusl(luslUrl, imperialName) {
   const cacheKey = `lusl:${luslUrl}`;
   const cached = getCached(cacheKey);
@@ -304,21 +260,17 @@ app.get('/debug-bucs', async (req, res) => {
   }
 });
 
-// Returns all three teams' tables in one request so the app makes one fetch
+// Returns all three teams' tables in one request
 // GET /tables
 app.get('/tables', async (req, res) => {
-  const BUCS_BASE =
-    'https://bucs.playwaze.com/bucs-football-25-26/cdkrbrt3dcl/league-display/leagues/i5p7xbti8m';
+  // FIX: Appended the full collection ID token '/i5p7xbti8m' to hit the division selector view directly
+  const BUCS_BASE = 'https://bucs.playwaze.com/bucs-football-25-26/cdkrbrt3dcl/league-display/leagues/i5p7xbti8m';
 
-  // ── Update these URLs once you confirm the LUSL division page URLs ──────────
   const LUSL_PREMIER  = 'https://www.lusl.co.uk/league-table/premier-division';
   const LUSL_DIV1     = 'https://www.lusl.co.uk/league-table/division-1';
   const LUSL_DIV3     = 'https://www.lusl.co.uk/league-table/division-3';
-  // ───────────────────────────────────────────────────────────────────────────
 
-  // ── Update BUCS_BASE to the correct competition page URL if needed ──────────
   const BUCS_URL = `${BUCS_BASE}`;
-  // ───────────────────────────────────────────────────────────────────────────
 
   const safe = async (fn) => {
     try { return await fn(); }
