@@ -138,23 +138,18 @@ async function scrapeBucs(browser, leagueUrl, tierLabel, imperialName) {
         console.log(`[BUCS] Clicked dropdown item: "${clicked}"`);
       }
 
-      // 3. Wait for the table to re-render with new data.
-      //    We wait for the current first-row team text to change, which confirms
-      //    the table has actually swapped — a plain delay is unreliable.
-      const prevFirstTeam = await page.$eval(
-        'table tbody tr:first-child td:nth-child(2)',
-        (el) => el.textContent.trim()
-      ).catch(() => '');
-
+      // 3. Wait for the .selection div to show the new division value.
+      //    This is synchronous with the table re-render and far more reliable
+      //    than watching for a team-name change (teams can be identical across divs).
       await page.waitForFunction(
-        (prev) => {
-          const el = document.querySelector('table tbody tr:first-child td:nth-child(2)');
-          return el && el.textContent.trim() !== prev;
+        (token) => {
+          const sel = document.querySelector('[data-filter="devision"] .selection');
+          return sel && sel.textContent.trim().toLowerCase().includes(token.toLowerCase());
         },
-        { timeout: 10000, polling: 300 },
-        prevFirstTeam
+        { timeout: 10000, polling: 200 },
+        divisionToken
       ).catch(() => {
-        console.warn('[BUCS] Table may not have refreshed after dropdown change');
+        console.warn(`[BUCS] .selection did not update to "${divisionToken}" — scraping anyway`);
       });
     }
 
