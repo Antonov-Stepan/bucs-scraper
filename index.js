@@ -223,8 +223,10 @@ async function scrapeBucs(browser, leagueUrl, tierLabel, imperialName) {
 }
 
 // ─── LUSL scraper ─────────────────────────────────────────────────────────────
-async function scrapeLusl(browser, luslUrl, imperialName) {
-  const cacheKey = `lusl:${luslUrl}`;
+// All LUSL divisions live on one URL with a custom dropdown to switch between them.
+// divisionLabel is the text shown in the dropdown, e.g. "Premier Division", "Division 1"
+async function scrapeLusl(browser, luslUrl, divisionLabel, imperialName) {
+  const cacheKey = `lusl:${divisionLabel}`;
   const cached = getCached(cacheKey);
   if (cached) return cached;
 
@@ -234,27 +236,120 @@ async function scrapeLusl(browser, luslUrl, imperialName) {
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
       'KHTML, like Gecko Chrome/124.0.0.0 Safari/537.36'
     );
-    await page.goto(luslUrl, { waitUntil: 'networkidle2', timeout: 30000 });
-    await page.waitForSelector('table tbody tr', { timeout: 10000 });
+    await page.goto(luslUrl, { waitUntil: 'networkidle0', timeout: 45000 });
+    await page.waitForFunction(
+      () => document.querySelectorAll('table tbody tr').length > 0,
+      { timeout: 20000, polling: 500 }
+    );
 
+    // ── Read current division from the dropdown ───────────────────────────────
+    // Try both the Playwaze-style [data-filter] pattern and a generic .selection
+    const currentDivision = await page.evaluate(() => {
+      const sel =
+        document.querySelector('[data-filter="devision"] .selection') ||
+        document.querySelector('[data-filter="division"] .selection') ||
+        document.querySelector('.custom-dropDown .selection');
+      return sel ? sel.textContent.trim() : null;
+    });
+
+    console.log(`[LUSL] Current division: "${currentDivision}", need: "${divisionLabel}"`);
+
+    // ── Open dropdown and read all options ────────────────────────────────────
+    const dropdownOptions = await (async () => {
+      try {
+        const trigger =
+          await page.$('[data-filter="devision"] .selection') ||
+          await page.$('[data-filter="division"] .selection') ||
+          await page.$('.custom-dropDown .selection');
+        if (!trigger) return [];
+        await trigger.click();
+        await page.waitForSelector('.dropdownList li', { timeout: 3000 });
+        const opts = await page.evaluate(() =>
+          Array.from(document.querySelectorAll('.dropdownList li'))
+            .map(li => li.textContent.trim())
+        );
+        await page.keyboard.press('Escape');
+        return opts;
+      } catch {
+        return [];
+      }
+    })();
+
+    console.log(`[LUSL] Dropdown options:`, JSON.stringify(dropdownOptions));
+
+    // ── Switch division if needed ─────────────────────────────────────────────
+    const needsSwitch = currentDivision &&
+      !currentDivision.toLowerCase().includes(divisionLabel.toLowerCase());
+    const canSwitch = dropdownOptions.some(
+      o => o.toLowerCase().includes(divisionLabel.toLowerCase())
+    );
+
+    if (needsSwitch && canSwitch) {
+      // Re-open dropdown and click the target option
+      const trigger =
+        await page.$('[data-filter="devision"] .selection') ||
+        await page.$('[data-filter="division"] .selection') ||
+        await page.$('.custom-dropDown .selection');
+      await trigger.click();
+      await page.waitForSelector('.dropdownList li', { timeout: 5000 });
+
+      const clicked = await page.evaluate((label) => {
+        const target = Array.from(document.querySelectorAll('.dropdownList li'))
+          .find(li => li.textContent.trim().toLowerCase().includes(label.toLowerCase()));
+        if (target) { target.click(); return target.textContent.trim(); }
+        return null;
+      }, divisionLabel);
+
+      console.log(`[LUSL] Switched to: "${clicked}"`);
+
+      // Wait for the dropdown label to update as confirmation
+      await page.waitForFunction(
+        (label) => {
+          const sel =
+            document.querySelector('[data-filter="devision"] .selection') ||
+            document.querySelector('[data-filter="division"] .selection') ||
+            document.querySelector('.custom-dropDown .selection');
+          return sel && sel.textContent.trim().toLowerCase().includes(label.toLowerCase());
+        },
+        { timeout: 10000, polling: 200 },
+        divisionLabel
+      ).catch(() => console.warn(`[LUSL] Dropdown did not update to "${divisionLabel}" — scraping anyway`));
+
+    } else if (needsSwitch && !canSwitch) {
+      console.log(`[LUSL] Division "${divisionLabel}" not in dropdown — scraping current table`);
+    }
+
+    await new Promise(r => setTimeout(r, 2000));
+
+    // ── Scrape the table ──────────────────────────────────────────────────────
     const allRows = await page.evaluate(() =>
       Array.from(document.querySelectorAll('table tbody tr')).map((tr) =>
         Array.from(tr.querySelectorAll('td')).map((td) => (td.textContent || '').trim())
       )
     );
 
+    console.log(`[LUSL] Raw rows for "${divisionLabel}": ${allRows.length}, first: ${JSON.stringify(allRows[0])}`);
+
     const parsed = allRows
       .filter((cells) => cells.length >= 8)
-      .map((cells) => ({
-        pos:  parseInt(cells[0], 10) || 0,
-        team: cells[1] || '',
-        p:    parseInt(cells[2], 10) || 0,
-        w:    parseInt(cells[3], 10) || 0,
-        d:    parseInt(cells[4], 10) || 0,
-        l:    parseInt(cells[5], 10) || 0,
-        gd:   parseInt(cells[cells.length - 2], 10) || 0,
-        pts:  parseInt(cells[cells.length - 1], 10) || 0,
-      }))
+      .map((cells) => {
+        const lastNumericIdx = (() => {
+          for (let i = cells.length - 1; i >= 0; i--) {
+            if (/^-?\d+$/.test(cells[i].trim())) return i;
+          }
+          return cells.length - 1;
+        })();
+        return {
+          pos:  parseInt(cells[0], 10) || 0,
+          team: cells[1] || '',
+          p:    parseInt(cells[2], 10) || 0,
+          w:    parseInt(cells[3], 10) || 0,
+          d:    parseInt(cells[4], 10) || 0,
+          l:    parseInt(cells[5], 10) || 0,
+          gd:   parseInt(cells[lastNumericIdx - 1], 10) || 0,
+          pts:  parseInt(cells[lastNumericIdx], 10) || 0,
+        };
+      })
       .filter((r) => r.pos > 0);
 
     const imperialIdx = parsed.findIndex((r) =>
@@ -274,7 +369,7 @@ async function scrapeLusl(browser, luslUrl, imperialName) {
     setCache(cacheKey, result);
     return result;
   } catch (e) {
-    console.error('LUSL scrape error:', e.message);
+    console.error(`LUSL scrape error for "${divisionLabel}":`, e.message);
     return [];
   } finally {
     await page.close();
@@ -289,9 +384,12 @@ app.get('/tables', async (req, res) => {
   const BUCS_M2_URL = process.env.BUCS_M2_LEAGUE_URL || BUCS_M1_URL;
   const BUCS_M3_URL = process.env.BUCS_M3_LEAGUE_URL || BUCS_M1_URL;
 
-  const LUSL_PREMIER = 'https://www.lusl.co.uk/league-table/premier-division';
-  const LUSL_DIV1    = 'https://www.lusl.co.uk/league-table/division-1';
-  const LUSL_DIV3    = 'https://www.lusl.co.uk/league-table/division-3';
+  // All LUSL divisions are on one page — the division label must match the dropdown text exactly.
+  // Check the dropdown on lusl.co.uk and update these strings if they differ.
+  const LUSL_URL     = 'https://www.lusl.co.uk/league-table/premier-division'; // any LUSL table URL works as entry point
+  const LUSL_PREMIER_LABEL = 'Premier Division';
+  const LUSL_DIV1_LABEL    = 'Division 1';
+  const LUSL_DIV3_LABEL    = 'Division 3';
 
   const browser = await launchBrowser();
   const safeScrape = async (fn) => {
@@ -301,11 +399,11 @@ app.get('/tables', async (req, res) => {
 
   try {
     const m1Bucs = await safeScrape(() => scrapeBucs(browser, BUCS_M1_URL, 'SE 2B', 'Imperial Medics'));
-    const m1Lusl = await safeScrape(() => scrapeLusl(browser, LUSL_PREMIER, 'Imperial Medics'));
+    const m1Lusl = await safeScrape(() => scrapeLusl(browser, LUSL_URL, LUSL_PREMIER_LABEL, 'Imperial Medics'));
     const m2Bucs = await safeScrape(() => scrapeBucs(browser, BUCS_M2_URL, 'SE 5C', 'Imperial Medics'));
-    const m2Lusl = await safeScrape(() => scrapeLusl(browser, LUSL_DIV1, 'Imperial Medics'));
+    const m2Lusl = await safeScrape(() => scrapeLusl(browser, LUSL_URL, LUSL_DIV1_LABEL, 'Imperial Medics'));
     const m3Bucs = await safeScrape(() => scrapeBucs(browser, BUCS_M3_URL, 'SE 7', 'Imperial Medics'));
-    const m3Lusl = await safeScrape(() => scrapeLusl(browser, LUSL_DIV3, 'Imperial Medics'));
+    const m3Lusl = await safeScrape(() => scrapeLusl(browser, LUSL_URL, LUSL_DIV3_LABEL, 'Imperial Medics'));
 
     res.json({
       lastUpdated: new Date().toISOString(),
