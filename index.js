@@ -154,14 +154,17 @@ async function scrapeBucs(browser, leagueUrl, tierLabel, imperialName) {
     }
 
     // ── Scrape the now-visible table ────────────────────────────────────────
-    // The active tab is div.table-view.tab-view.active — scrape only from that
+    // Give the SPA a moment to finish re-rendering after any dropdown change,
+    // then grab all rows from the page (there is only one visible table at a time).
+    await new Promise((r) => setTimeout(r, 2000));
+
     const allRows = await page.evaluate(() => {
-      const container = document.querySelector('.table-view.active') || document.body;
-      return Array.from(container.querySelectorAll('table tbody tr')).map((tr) =>
+      return Array.from(document.querySelectorAll('table tbody tr')).map((tr) =>
         Array.from(tr.querySelectorAll('td')).map((td) => (td.textContent || '').trim())
       );
     });
 
+    console.log(`[BUCS] Raw rows scraped for ${tierLabel}: ${allRows.length}, first row: ${JSON.stringify(allRows[0])}`);
     if (allRows.length === 0) return [];
 
     const parsed = allRows
