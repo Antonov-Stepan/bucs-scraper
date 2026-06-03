@@ -283,12 +283,12 @@ app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/tables', async (req, res) => {
   const BUCS_M1_URL = 'https://bucs.playwaze.com/bucs-football-25-26/cdkrbrt3dcl/league-display/leagues/i5p7xbti8m';
-  const BUCS_M2_URL = process.env.BUCS_M2_LEAGUE_URL || BUCS_M1_URL;
-  const BUCS_M3_URL = process.env.BUCS_M3_LEAGUE_URL || BUCS_M1_URL;
+  const BUCS_M2_URL = 'https://bucs.playwaze.com/bucs-football-25-26/cdkrbrt3dcl/league-display/Leagues/cdmdszzjypt';
+  const BUCS_M3_URL = 'https://bucs.playwaze.com/bucs-football-25-26/cdkrbrt3dcl/league-display/Leagues/t39d2f4ffmxn';
 
-  const LUSL_PREMIER = 'https://www.lusl.co.uk/league-table/premier-division';
-  const LUSL_DIV1    = 'https://www.lusl.co.uk/league-table/division-1';
-  const LUSL_DIV3    = 'https://www.lusl.co.uk/league-table/division-3';
+  const LUSL_PREMIER = 'https://bucs.playwaze.com/lusl-football-25-26/61r2sreurlspdy/league-display/Leagues/smaid3mi5gbr';
+  const LUSL_DIV1    = 'https://bucs.playwaze.com/lusl-football-25-26/61r2sreurlspdy/league-display/Leagues/smaid3mi5gbr';
+  const LUSL_DIV3    = 'https://bucs.playwaze.com/lusl-football-25-26/61r2sreurlspdy/league-display/Leagues/smaid3mi5gbr';
 
   const browser = await launchBrowser();
   const safeScrape = async (fn) => {
