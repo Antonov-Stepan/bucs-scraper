@@ -79,6 +79,10 @@ async function scrapeBucs(browser, leagueUrl, tierLabel, imperialName) {
   const cached = getCached(cacheKey);
   if (cached) return cached;
 
+  // tierLabel is the division suffix shown in the dropdown, e.g. "2B", "5C", "7"
+  // Strip any leading "SE " prefix so we match the raw dropdown text like "2B"
+  const divisionToken = tierLabel.replace(/^SE\s*/i, '').trim();
+
   const page = await browser.newPage();
   try {
     await page.setUserAgent(
@@ -87,49 +91,71 @@ async function scrapeBucs(browser, leagueUrl, tierLabel, imperialName) {
     );
     await page.goto(leagueUrl, { waitUntil: 'networkidle0', timeout: 45000 });
 
+    // Wait for the table-view tab and initial table to appear
     await page.waitForFunction(
       () => document.querySelectorAll('table tbody tr').length > 0,
       { timeout: 20000, polling: 500 }
-    ).catch(() => {
-      console.error(`[BUCS] No table rows found for tier ${tierLabel}`);
-    });
+    );
 
-    // The page renders ALL divisions in the group on one page (e.g. 2A, 2B, 2C…).
-    // We find the heading element whose text contains tierLabel, then walk forward
-    // in the DOM to grab the first <table> that follows it.
-    const allRows = await page.evaluate((label) => {
-      // Search every element for one whose text matches the tier label
-      const allEls = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6,div,span,p'));
-      const heading = allEls.find(
-        (el) =>
-          el.children.length === 0 && // leaf node — avoid matching parent containers
-          el.textContent.trim().toLowerCase().includes(label.toLowerCase())
-      );
+    // ── Check whether we're already on the right division ──────────────────
+    // The active division is shown in:  div.custom-dropDown[data-filter="devision"] div.selection
+    // Note: Playwaze has a typo — "devision" not "division"
+    const currentDivision = await page.$eval(
+      '[data-filter="devision"] .selection',
+      (el) => el.textContent.trim()
+    ).catch(() => null);
 
-      let table = null;
-      if (heading) {
-        // Walk next siblings and parent's siblings until we hit a <table>
-        let node = heading;
-        while (node) {
-          node = node.nextElementSibling || (node.parentElement && node.parentElement.nextElementSibling);
-          if (!node) break;
-          table = node.tagName === 'TABLE' ? node : node.querySelector('table');
-          if (table) break;
-        }
+    console.log(`[BUCS] Current division on page: "${currentDivision}", need: "${divisionToken}"`);
+
+    if (currentDivision && currentDivision !== divisionToken) {
+      // 1. Click the dropdown to open the <ul class="dropdownList">
+      await page.click('[data-filter="devision"] .selection');
+      await page.waitForSelector('[data-filter="devision"] .dropdownList li', { timeout: 5000 });
+
+      // 2. Find and click the <li> whose text matches our division token
+      const clicked = await page.evaluate((token) => {
+        const items = Array.from(
+          document.querySelectorAll('[data-filter="devision"] .dropdownList li')
+        );
+        const target = items.find(
+          (li) => li.textContent.trim().toLowerCase() === token.toLowerCase()
+        );
+        if (target) { target.click(); return true; }
+        return false;
+      }, divisionToken);
+
+      if (!clicked) {
+        console.error(`[BUCS] Could not find division "${divisionToken}" in dropdown`);
       }
 
-      // Fallback: if heading not found or no table after it, take the first table
-      // (same as old behaviour — at least scrape something)
-      if (!table) {
-        console.warn(`[BUCS] Could not locate heading for "${label}", falling back to first table`);
-        table = document.querySelector('table');
-      }
-      if (!table) return [];
+      // 3. Wait for the table to re-render with new data.
+      //    We wait for the current first-row team text to change, which confirms
+      //    the table has actually swapped — a plain delay is unreliable.
+      const prevFirstTeam = await page.$eval(
+        'table tbody tr:first-child td:nth-child(2)',
+        (el) => el.textContent.trim()
+      ).catch(() => '');
 
-      return Array.from(table.querySelectorAll('tbody tr')).map((tr) =>
+      await page.waitForFunction(
+        (prev) => {
+          const el = document.querySelector('table tbody tr:first-child td:nth-child(2)');
+          return el && el.textContent.trim() !== prev;
+        },
+        { timeout: 10000, polling: 300 },
+        prevFirstTeam
+      ).catch(() => {
+        console.warn('[BUCS] Table may not have refreshed after dropdown change');
+      });
+    }
+
+    // ── Scrape the now-visible table ────────────────────────────────────────
+    // The active tab is div.table-view.tab-view.active — scrape only from that
+    const allRows = await page.evaluate(() => {
+      const container = document.querySelector('.table-view.active') || document.body;
+      return Array.from(container.querySelectorAll('table tbody tr')).map((tr) =>
         Array.from(tr.querySelectorAll('td')).map((td) => (td.textContent || '').trim())
       );
-    }, tierLabel);
+    });
 
     if (allRows.length === 0) return [];
 
