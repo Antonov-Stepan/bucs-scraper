@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: bucs-scraper
+    runtime: node
+    buildCommand: npm install && npx puppeteer browsers install chrome
+    startCommand: node index.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: 20.11.0
+      - key: PUPPETEER_CACHE_DIR
+        value: /opt/render/project/src/.cache/puppeteer
