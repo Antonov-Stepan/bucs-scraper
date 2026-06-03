@@ -112,20 +112,30 @@ async function scrapeBucs(browser, leagueUrl, tierLabel, imperialName) {
       await page.click('[data-filter="devision"] .selection');
       await page.waitForSelector('[data-filter="devision"] .dropdownList li', { timeout: 5000 });
 
-      // 2. Find and click the <li> whose text matches our division token
+      // 2. Log all dropdown options so we know exactly what text they contain
+      const dropdownOptions = await page.evaluate(() =>
+        Array.from(document.querySelectorAll('[data-filter="devision"] .dropdownList li'))
+          .map((li) => li.textContent.trim())
+      );
+      console.log(`[BUCS] Dropdown options:`, JSON.stringify(dropdownOptions));
+
+      // 3. Find and click the <li> whose text *contains* our division token
+      //    (the full text may be e.g. "Men's SE Tier 2B" — exact match would miss it)
       const clicked = await page.evaluate((token) => {
         const items = Array.from(
           document.querySelectorAll('[data-filter="devision"] .dropdownList li')
         );
         const target = items.find(
-          (li) => li.textContent.trim().toLowerCase() === token.toLowerCase()
+          (li) => li.textContent.trim().toLowerCase().includes(token.toLowerCase())
         );
-        if (target) { target.click(); return true; }
-        return false;
+        if (target) { target.click(); return target.textContent.trim(); }
+        return null;
       }, divisionToken);
 
       if (!clicked) {
-        console.error(`[BUCS] Could not find division "${divisionToken}" in dropdown`);
+        console.error(`[BUCS] Could not find division "${divisionToken}" in dropdown options: ${JSON.stringify(dropdownOptions)}`);
+      } else {
+        console.log(`[BUCS] Clicked dropdown item: "${clicked}"`);
       }
 
       // 3. Wait for the table to re-render with new data.
