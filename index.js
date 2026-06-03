@@ -154,8 +154,6 @@ async function scrapeBucs(browser, leagueUrl, tierLabel, imperialName) {
     }
 
     // ── Scrape the now-visible table ────────────────────────────────────────
-    // Give the SPA a moment to finish re-rendering after any dropdown change,
-    // then grab all rows from the page (there is only one visible table at a time).
     await new Promise((r) => setTimeout(r, 2000));
 
     const allRows = await page.evaluate(() => {
@@ -169,16 +167,28 @@ async function scrapeBucs(browser, leagueUrl, tierLabel, imperialName) {
 
     const parsed = allRows
       .filter((cells) => cells.length >= 9)
-      .map((cells) => ({
-        pos:  parseInt(cells[0], 10) || 0,
-        team: cells[1] || '',
-        p:    parseInt(cells[2], 10) || 0,
-        w:    parseInt(cells[3], 10) || 0,
-        d:    parseInt(cells[4], 10) || 0,
-        l:    parseInt(cells[5], 10) || 0,
-        gd:   parseInt(cells[cells.length - 2], 10) || 0,
-        pts:  parseInt(cells[cells.length - 1], 10) || 0,
-      }))
+      .map((cells) => {
+        // Raw columns: [Pos, Team, P, W, D, L, F, A, GD, PointsTooltip, Pts]
+        // The tooltip cell ("Points breakdown\n Won: X...") is invisible to users
+        // but present in the DOM — strip it to find Pts as the last numeric cell.
+        const lastNumericIdx = (() => {
+          for (let i = cells.length - 1; i >= 0; i--) {
+            if (/^-?\d+$/.test(cells[i].trim())) return i;
+          }
+          return cells.length - 1;
+        })();
+        const gdIdx = lastNumericIdx - 1;
+        return {
+          pos:  parseInt(cells[0], 10) || 0,
+          team: cells[1] || '',
+          p:    parseInt(cells[2], 10) || 0,
+          w:    parseInt(cells[3], 10) || 0,
+          d:    parseInt(cells[4], 10) || 0,
+          l:    parseInt(cells[5], 10) || 0,
+          gd:   parseInt(cells[gdIdx], 10) || 0,
+          pts:  parseInt(cells[lastNumericIdx], 10) || 0,
+        };
+      })
       .filter((r) => r.pos > 0);
 
     const imperialIdx = parsed.findIndex((r) =>
