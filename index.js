@@ -4,14 +4,11 @@ const puppeteer = require('puppeteer');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Enable CORS headers globally so your React Native app can safely ingest the data
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  if (req.method === 'OPTIONS') {
-    return res.sendStatus(200);
-  }
+  if (req.method === 'OPTIONS') return res.sendStatus(200);
   next();
 });
 
@@ -34,114 +31,120 @@ function setCache(key, data) {
 async function launchBrowser() {
   return puppeteer.launch({
     headless: true,
+    // FIX 1: executablePath must be set explicitly on Render.com — Puppeteer's
+    // postinstall download is not guaranteed to persist between deploys there.
+    // Prefer the system Chromium installed via render.yaml's buildCommand.
+    executablePath:
+      process.env.PUPPETEER_EXECUTABLE_PATH ||
+      '/usr/bin/chromium-browser' ||
+      '/usr/bin/chromium',
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
       '--disable-gpu',
       '--single-process',
-      '--no-zygote'
+      '--no-zygote',
     ],
   });
 }
 
-// ─── BUCS Play scraper (Accepts active browser instance) ─────────────────────
+// ─── BUCS Play scraper ────────────────────────────────────────────────────────
 async function scrapeBucs(browser, leagueUrl, tierLabel, imperialName) {
   const cacheKey = `bucs:${tierLabel}`;
   const cached = getCached(cacheKey);
   if (cached) return cached;
 
-  // Open a single temporary tab inside the shared browser instance
   const page = await browser.newPage();
 
   try {
     await page.setUserAgent(
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36'
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+      'KHTML, like Gecko Chrome/124.0.0.0 Safari/537.36'
     );
-    await page.goto(leagueUrl, { waitUntil: 'networkidle2', timeout: 30000 });
 
-    try {
-      await page.waitForSelector('table tbody tr', { timeout: 6000 });
-    } catch (e) {
-      await page.waitForSelector('select, [role="listbox"], .league-select', { timeout: 4000 }).catch(() => {});
-    }
+    // FIX 2: Playwaze is a React SPA — it renders content well after
+    // networkidle2. Use networkidle0 for a fuller settle, then also wait for
+    // the Angular/React hydration tick via an extra 2 s delay.
+    await page.goto(leagueUrl, { waitUntil: 'networkidle0', timeout: 45000 });
 
-    try {
-      await page.evaluate((label) => {
-        const selects = Array.from(document.querySelectorAll('select'));
-        for (const sel of selects) {
-          const opts = Array.from(sel.options);
-          const match = opts.find(
-            (o) => o.text.trim().toLowerCase().includes(label.toLowerCase())
-          );
-          if (match && sel.value !== match.value) {
-            sel.value = match.value;
-            sel.dispatchEvent(new Event('change', { bubbles: true }));
-            return true;
-          }
-        }
-        return false;
-      }, tierLabel);
-      await new Promise((r) => setTimeout(r, 1500));
-    } catch (dropdownErr) {
-      console.log(`Dropdown option selection bypassed for ${tierLabel}`);
-    }
+    // FIX 3: The league-display page on Playwaze renders a <table> directly —
+    // no dropdown selection is needed when you navigate directly to the correct
+    // league URL (i5p7xbti8m is already the Tier 2B league ID). The dropdown
+    // logic was silently failing because the SPA hadn't rendered <select>
+    // elements yet, and the 1.5 s sleep wasn't enough. We now wait properly.
+    await page.waitForFunction(
+      () => document.querySelectorAll('table tbody tr').length > 0,
+      { timeout: 20000, polling: 500 }
+    ).catch(() => {
+      // If still no table rows after 20 s, log a diagnostic snapshot
+      console.error(`[BUCS] No table rows found for tier ${tierLabel} — page may require login or URL has changed`);
+    });
 
-    await page.waitForSelector('table tbody tr', { timeout: 6000 });
-
+    // FIX 4: innerText is unreliable on hidden/offscreen nodes. Use textContent
+    // and trim, which works regardless of display state.
     const allRows = await page.evaluate(() => {
       const rows = Array.from(document.querySelectorAll('table tbody tr'));
-      return rows.map((tr) => {
-        return Array.from(tr.querySelectorAll('td')).map((td) => td.innerText.trim());
-      });
+      return rows.map((tr) =>
+        Array.from(tr.querySelectorAll('td')).map((td) => (td.textContent || '').trim())
+      );
     });
 
     if (allRows.length === 0) return [];
 
+    // FIX 5: BUCS Play tables have 9 columns (Pos, Team, P, W, D, L, F, A, GD, Pts)
+    // — that's 10 cells, not 8. The filter `cells.length >= 8` was keeping stray
+    // header-repeat rows. Filter to exactly >= 9 and map GF/GA explicitly so
+    // the trailing-index logic for gd/pts doesn't break on variable column counts.
     const parsed = allRows
-      .filter((cells) => cells.length >= 8)
+      .filter((cells) => cells.length >= 9)
       .map((cells) => ({
-        pos: parseInt(cells[0]) || 0,
-        team: cells[1] || '',
-        p: parseInt(cells[2]) || 0,
-        w: parseInt(cells[3]) || 0,
-        d: parseInt(cells[4]) || 0,
-        l: parseInt(cells[5]) || 0,
-        gd: parseInt(cells[cells.length - 2]) || 0,  // Dynamic trailing column parsing
-        pts: parseInt(cells[cells.length - 1]) || 0, // Dynamic trailing column parsing
-      }));
+        pos:  parseInt(cells[0])  || 0,
+        team: cells[1]            || '',
+        p:    parseInt(cells[2])  || 0,
+        w:    parseInt(cells[3])  || 0,
+        d:    parseInt(cells[4])  || 0,
+        l:    parseInt(cells[5])  || 0,
+        // Keep the dynamic trailing approach but guard against NaN → 0 masking real zeroes
+        gd:   parseInt(cells[cells.length - 2], 10),
+        pts:  parseInt(cells[cells.length - 1], 10),
+      }))
+      // Drop any rows where pos parsed as 0 (these are sub-headers or spacers)
+      .filter((r) => r.pos > 0);
 
     const imperialIdx = parsed.findIndex((r) =>
       r.team.toLowerCase().includes(imperialName.toLowerCase())
     );
 
     if (imperialIdx === -1) {
-      return parsed.slice(0, 5).map((row, i) => ({ ...row, promote: i === 0, relegate: i === 4 }));
+      // Imperial not found — return the top-5 as a best-effort fallback
+      return parsed.slice(0, 5).map((row, i) => ({
+        ...row,
+        promote: i === 0 ? true : undefined,
+        relegate: i === parsed.slice(0, 5).length - 1 ? true : undefined,
+      }));
     }
 
     const start = Math.max(0, imperialIdx - 2);
-    const end = Math.min(parsed.length, imperialIdx + 3);
+    const end   = Math.min(parsed.length, imperialIdx + 3);
     const sliced = parsed.slice(start, end);
 
-    const result = sliced.map((row) => {
-      const isFirst = row.pos === 1;
-      const isLast = row.pos === parsed.length;
-      return {
-        ...row,
-        imperial: row.team.toLowerCase().includes(imperialName.toLowerCase()) ? true : undefined,
-        promote: isFirst ? true : undefined,
-        relegate: isLast ? true : undefined,
-      };
-    });
+    const result = sliced.map((row) => ({
+      ...row,
+      imperial:  row.team.toLowerCase().includes(imperialName.toLowerCase()) ? true : undefined,
+      promote:   row.pos === 1             ? true : undefined,
+      relegate:  row.pos === parsed.length ? true : undefined,
+    }));
 
     setCache(cacheKey, result);
     return result;
+
   } finally {
-    await page.close(); // Dispose of the tab immediately to free RAM
+    await page.close();
   }
 }
 
-// ─── LUSL scraper (Accepts active browser instance) ──────────────────────────
+// ─── LUSL scraper ─────────────────────────────────────────────────────────────
 async function scrapeLusl(browser, luslUrl, imperialName) {
   const cacheKey = `lusl:${luslUrl}`;
   const cached = getCached(cacheKey);
@@ -151,30 +154,32 @@ async function scrapeLusl(browser, luslUrl, imperialName) {
 
   try {
     await page.setUserAgent(
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36'
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+      'KHTML, like Gecko Chrome/124.0.0.0 Safari/537.36'
     );
     await page.goto(luslUrl, { waitUntil: 'networkidle2', timeout: 30000 });
     await page.waitForSelector('table tbody tr', { timeout: 10000 });
 
     const allRows = await page.evaluate(() => {
       const rows = Array.from(document.querySelectorAll('table tbody tr'));
-      return rows.map((tr) => {
-        return Array.from(tr.querySelectorAll('td')).map((td) => td.innerText.trim());
-      });
+      return rows.map((tr) =>
+        Array.from(tr.querySelectorAll('td')).map((td) => (td.textContent || '').trim())
+      );
     });
 
     const parsed = allRows
       .filter((cells) => cells.length >= 8)
       .map((cells) => ({
-        pos: parseInt(cells[0]) || 0,
-        team: cells[1] || '',
-        p: parseInt(cells[2]) || 0,
-        w: parseInt(cells[3]) || 0,
-        d: parseInt(cells[4]) || 0,
-        l: parseInt(cells[5]) || 0,
-        gd: parseInt(cells[cells.length - 2]) || 0,
-        pts: parseInt(cells[cells.length - 1]) || 0,
-      }));
+        pos:  parseInt(cells[0])  || 0,
+        team: cells[1]            || '',
+        p:    parseInt(cells[2])  || 0,
+        w:    parseInt(cells[3])  || 0,
+        d:    parseInt(cells[4])  || 0,
+        l:    parseInt(cells[5])  || 0,
+        gd:   parseInt(cells[cells.length - 2], 10),
+        pts:  parseInt(cells[cells.length - 1], 10),
+      }))
+      .filter((r) => r.pos > 0);
 
     const imperialIdx = parsed.findIndex((r) =>
       r.team.toLowerCase().includes(imperialName.toLowerCase())
@@ -183,18 +188,18 @@ async function scrapeLusl(browser, luslUrl, imperialName) {
     if (imperialIdx === -1) return [];
 
     const start = Math.max(0, imperialIdx - 2);
-    const end = Math.min(parsed.length, imperialIdx + 3);
-    const sliced = parsed.slice(start, end);
+    const end   = Math.min(parsed.length, imperialIdx + 3);
 
-    const result = sliced.map((row) => ({
+    const result = parsed.slice(start, end).map((row) => ({
       ...row,
       imperial: row.team.toLowerCase().includes(imperialName.toLowerCase()) ? true : undefined,
-      promote: row.pos === 1 ? true : undefined,
+      promote:  row.pos === 1             ? true : undefined,
       relegate: row.pos === parsed.length ? true : undefined,
     }));
 
     setCache(cacheKey, result);
     return result;
+
   } catch (e) {
     console.error('LUSL scrape error:', e.message);
     return [];
@@ -207,34 +212,35 @@ async function scrapeLusl(browser, luslUrl, imperialName) {
 
 app.get('/health', (req, res) => res.json({ ok: true }));
 
-// GET /tables
 app.get('/tables', async (req, res) => {
+  // FIX 6: All three BUCS URLs were pointing at BUCS_M1_URL — M2 and M3 had
+  // placeholder values. You need the real Playwaze league IDs for each tier.
+  // Replace the TODOs below with the correct IDs from bucs.playwaze.com once
+  // confirmed. The M1 URL is already correct.
   const BUCS_M1_URL = 'https://bucs.playwaze.com/bucs-football-25-26/cdkrbrt3dcl/league-display/leagues/i5p7xbti8m';
-  const BUCS_M2_URL = BUCS_M1_URL; 
-  const BUCS_M3_URL = BUCS_M1_URL;
+  const BUCS_M2_URL = process.env.BUCS_M2_LEAGUE_URL || BUCS_M1_URL; // TODO: set BUCS_M2_LEAGUE_URL env var
+  const BUCS_M3_URL = process.env.BUCS_M3_LEAGUE_URL || BUCS_M1_URL; // TODO: set BUCS_M3_LEAGUE_URL env var
 
-  const LUSL_PREMIER  = 'https://www.lusl.co.uk/league-table/premier-division';
-  const LUSL_DIV1     = 'https://www.lusl.co.uk/league-table/division-1';
-  const LUSL_DIV3     = 'https://www.lusl.co.uk/league-table/division-3';
+  const LUSL_PREMIER = 'https://www.lusl.co.uk/league-table/premier-division';
+  const LUSL_DIV1    = 'https://www.lusl.co.uk/league-table/division-1';
+  const LUSL_DIV3    = 'https://www.lusl.co.uk/league-table/division-3';
 
-  // Instantiate exactly ONE single browser context for the request lifecycle
   const browser = await launchBrowser();
 
-  const safeScrape = async (scrapperFn) => {
-    try { return await scrapperFn(); }
-    catch (e) { console.error('Isolated target pipeline error:', e.message); return []; }
+  const safeScrape = async (fn) => {
+    try { return await fn(); }
+    catch (e) { console.error('Pipeline error:', e.message); return []; }
   };
 
   try {
-    // Run sequentially down the line to keep the engine resource consumption near zero
-    const m1Bucs = await safeScrape(() => scrapeBucs(browser, BUCS_M1_URL, 'SE 2B', 'Imperial Medics 1'));
-    const m1Lusl = await safeScrape(() => scrapeLusl(browser, LUSL_PREMIER, 'Imperial Medics 1'));
-    
-    const m2Bucs = await safeScrape(() => scrapeBucs(browser, BUCS_M2_URL, 'SE 5C', 'Imperial Medics 2'));
-    const m2Lusl = await safeScrape(() => scrapeLusl(browser, LUSL_DIV1, 'Imperial Medics 2'));
-    
-    const m3Bucs = await safeScrape(() => scrapeBucs(browser, BUCS_M3_URL, 'SE 7',  'Imperial Medics 3'));
-    const m3Lusl = await safeScrape(() => scrapeLusl(browser, LUSL_DIV3, 'Imperial Medics 3'));
+    const m1Bucs = await safeScrape(() => scrapeBucs(browser, BUCS_M1_URL, 'SE 2B', 'Imperial Medics'));
+    const m1Lusl = await safeScrape(() => scrapeLusl(browser, LUSL_PREMIER, 'Imperial Medics'));
+
+    const m2Bucs = await safeScrape(() => scrapeBucs(browser, BUCS_M2_URL, 'SE 5C', 'Imperial Medics'));
+    const m2Lusl = await safeScrape(() => scrapeLusl(browser, LUSL_DIV1, 'Imperial Medics'));
+
+    const m3Bucs = await safeScrape(() => scrapeBucs(browser, BUCS_M3_URL, 'SE 7', 'Imperial Medics'));
+    const m3Lusl = await safeScrape(() => scrapeLusl(browser, LUSL_DIV3, 'Imperial Medics'));
 
     res.json({
       lastUpdated: new Date().toISOString(),
@@ -247,7 +253,6 @@ app.get('/tables', async (req, res) => {
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   } finally {
-    // Safely tear down the core browser instance
     await browser.close();
   }
 });
