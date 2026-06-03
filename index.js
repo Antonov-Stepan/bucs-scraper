@@ -384,12 +384,12 @@ app.get('/tables', async (req, res) => {
   const BUCS_M2_URL = 'https://bucs.playwaze.com/bucs-football-25-26/cdkrbrt3dcl/league-display/Leagues/cdmdszzjypt';
   const BUCS_M3_URL = 'https://bucs.playwaze.com/bucs-football-25-26/cdkrbrt3dcl/league-display/Leagues/t39d2f4ffmxn';
 
-  // All LUSL divisions are on one page — the division label must match the dropdown text exactly.
-  // Check the dropdown on lusl.co.uk and update these strings if they differ.
-  const LUSL_URL     = 'https://bucs.playwaze.com/lusl-football-25-26/61r2sreurlspdy/league-display/Leagues/smaid3mi5gbr'; // any LUSL table URL works as entry point
-  const LUSL_PREMIER_LABEL = 'https://bucs.playwaze.com/lusl-football-25-26/61r2sreurlspdy/league-display/Leagues/smaid3mi5gbr';
-  const LUSL_DIV1_LABEL    = 'https://bucs.playwaze.com/lusl-football-25-26/61r2sreurlspdy/league-display/Leagues/smaid3mi5gbr';
-  const LUSL_DIV3_LABEL    = 'https://bucs.playwaze.com/lusl-football-25-26/61r2sreurlspdy/league-display/Leagues/smaid3mi5gbr';
+  // All LUSL divisions live on the Playwaze page — navigate there then switch via the dropdown.
+  // The label strings must match the dropdown text exactly (case-insensitive substring match).
+  const LUSL_URL           = 'https://bucs.playwaze.com/lusl-football-25-26/61r2sreurlspdy/league-display/Leagues/smaid3mi5gbr';
+  const LUSL_PREMIER_LABEL = 'Premier Division';
+  const LUSL_DIV1_LABEL    = 'Division 1';
+  const LUSL_DIV3_LABEL    = 'Division 3';
 
   const browser = await launchBrowser();
   const safeScrape = async (fn) => {
