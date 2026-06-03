@@ -94,11 +94,42 @@ async function scrapeBucs(browser, leagueUrl, tierLabel, imperialName) {
       console.error(`[BUCS] No table rows found for tier ${tierLabel}`);
     });
 
-    const allRows = await page.evaluate(() =>
-      Array.from(document.querySelectorAll('table tbody tr')).map((tr) =>
+    // The page renders ALL divisions in the group on one page (e.g. 2A, 2B, 2C…).
+    // We find the heading element whose text contains tierLabel, then walk forward
+    // in the DOM to grab the first <table> that follows it.
+    const allRows = await page.evaluate((label) => {
+      // Search every element for one whose text matches the tier label
+      const allEls = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6,div,span,p'));
+      const heading = allEls.find(
+        (el) =>
+          el.children.length === 0 && // leaf node — avoid matching parent containers
+          el.textContent.trim().toLowerCase().includes(label.toLowerCase())
+      );
+
+      let table = null;
+      if (heading) {
+        // Walk next siblings and parent's siblings until we hit a <table>
+        let node = heading;
+        while (node) {
+          node = node.nextElementSibling || (node.parentElement && node.parentElement.nextElementSibling);
+          if (!node) break;
+          table = node.tagName === 'TABLE' ? node : node.querySelector('table');
+          if (table) break;
+        }
+      }
+
+      // Fallback: if heading not found or no table after it, take the first table
+      // (same as old behaviour — at least scrape something)
+      if (!table) {
+        console.warn(`[BUCS] Could not locate heading for "${label}", falling back to first table`);
+        table = document.querySelector('table');
+      }
+      if (!table) return [];
+
+      return Array.from(table.querySelectorAll('tbody tr')).map((tr) =>
         Array.from(tr.querySelectorAll('td')).map((td) => (td.textContent || '').trim())
-      )
-    );
+      );
+    }, tierLabel);
 
     if (allRows.length === 0) return [];
 
