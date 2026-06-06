@@ -226,7 +226,8 @@ async function scrapeBucs(browser, leagueUrl, tierLabel, imperialName) {
 // All LUSL divisions live on one URL with a custom dropdown to switch between them.
 // divisionLabel is the text shown in the dropdown, e.g. "Premier Division", "Division 1"
 async function scrapeLusl(browser, luslUrl, divisionLabel, imperialName) {
-  const cacheKey = `lusl:${divisionLabel}`;
+  const urlKey = luslUrl.split('/').pop(); // grab last bit of the Url  e.g (e.g. epbs7hchm7) competitive and intermediate  league
+  const cacheKey = `lusl:${urlKey}:${divisionLabel}`; // cache both tables   separately
   const cached = getCached(cacheKey);
   if (cached) return cached;
 
@@ -390,7 +391,7 @@ app.get('/tables', async (req, res) => {
   const LUSL_PREMIER_LABEL = 'Premier Division';
   const LUSL_DIV1_LABEL    = 'Division 1';
   const LUSL_DIV3_LABEL    = 'Division 3';
-
+  const LUSL_lowerLeague_URL     = 'https://bucs.playwaze.com/lusl-football-25-26/61r2sreurlspdy/league-display/Leagues/epbs7hchm7'
   const browser = await launchBrowser();
   const safeScrape = async (fn) => {
     try { return await fn(); }
@@ -404,13 +405,14 @@ app.get('/tables', async (req, res) => {
     const m2Lusl = await safeScrape(() => scrapeLusl(browser, LUSL_URL, LUSL_DIV1_LABEL, 'Imperial Medics'));
     const m3Bucs = await safeScrape(() => scrapeBucs(browser, BUCS_M3_URL, 'SE 7', 'Imperial Medics'));
     const m3Lusl = await safeScrape(() => scrapeLusl(browser, LUSL_URL, LUSL_DIV3_LABEL, 'Imperial Medics'));
-
+    const m4Lusl = await safeScrape(() => scrapeLusl(browser, LUSL_lowerLeague_URL, LUSL_DIV1_LABEL, 'Imperial Medics'));
     res.json({
       lastUpdated: new Date().toISOString(),
       teams: [
         { bucs: m1Bucs, lusl: m1Lusl },
         { bucs: m2Bucs, lusl: m2Lusl },
         { bucs: m3Bucs, lusl: m3Lusl },
+        { bucs:null, lusl: m4Lusl },
       ],
     });
   } catch (err) {
