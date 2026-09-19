@@ -8,7 +8,7 @@ Express API that scrapes BUCS Play and LUSL league tables for Imperial Medics fo
 Returns `{ "ok": true }` — used to confirm the service is running.
 
 ### `GET /tables`
-Scrapes and returns league table rows for Imperial Medics' three football teams (M1, M2, M3) from both BUCS and LUSL. Each team object contains the 5 rows surrounding Imperial Medics in the table.
+Scrapes and returns league table rows for Imperial Medics' three football teams (M1, M2, M3) from both BUCS and LUSL. Each team object contains the **full league table** (every team, in table order), with Imperial Medics' row flagged.
 
 **Response shape:**
 ```json
@@ -26,7 +26,7 @@ Scrapes and returns league table rows for Imperial Medics' three football teams 
 ```
 
 Row flags (only present when `true`):
-- `imperial` — this is the Imperial Medics row
+- `imperial` — this is the Imperial Medics row (only rows whose name contains "Imperial Medics")
 - `promote` — this team is in a promotion position
 - `relegate` — this team is in a relegation position
 

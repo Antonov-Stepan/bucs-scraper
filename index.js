@@ -45,6 +45,16 @@ function findChrome() {
 
 const CHROME_PATH = findChrome();
 
+// ─── League URLs & labels ─────────────────────────────────────────────────────
+const BUCS_M1_URL          = 'https://bucs.playwaze.com/bucs-football-25-26/cdkrbrt3dcl/league-display/leagues/i5p7xbti8m';
+const BUCS_M2_URL          = 'https://bucs.playwaze.com/bucs-football-25-26/cdkrbrt3dcl/league-display/Leagues/cdmdszzjypt';
+const BUCS_M3_URL          = 'https://bucs.playwaze.com/bucs-football-25-26/cdkrbrt3dcl/league-display/Leagues/t39d2f4ffmxn';
+const LUSL_URL             = 'https://bucs.playwaze.com/lusl-football-25-26/61r2sreurlspdy/league-display/Leagues/smaid3mi5gbr';
+const LUSL_LOWER_URL       = 'https://bucs.playwaze.com/lusl-football-25-26/61r2sreurlspdy/league-display/Leagues/epbs7hchm7';
+const LUSL_PREMIER_LABEL   = 'Premier Division';
+const LUSL_DIV1_LABEL      = 'Division 1';
+const LUSL_DIV3_LABEL      = 'Division 3';
+
 // ─── Simple in-memory cache (refreshes every 3 hours) ────────────────────────
 const CACHE_TTL_MS = 3 * 60 * 60 * 1000;
 const cache = {};
@@ -71,6 +81,20 @@ async function launchBrowser() {
   };
   if (CHROME_PATH) opts.executablePath = CHROME_PATH;
   return puppeteer.launch(opts);
+}
+
+// ─── Shared: flag every row of the FULL table ─────────────────────────────────
+// Rows come back in table order. `imperial` marks Imperial Medics' row, and
+// `promote` / `relegate` mark the first and last place. (This used to be applied
+// to just the 5 rows around Imperial; now it covers the whole league.)
+function flagRows(parsed, imperialName) {
+  const needle = imperialName.toLowerCase();
+  return parsed.map((row) => ({
+    ...row,
+    imperial: row.team.toLowerCase().includes(needle) ? true : undefined,
+    promote:  row.pos === 1             ? true : undefined,
+    relegate: row.pos === parsed.length ? true : undefined,
+  }));
 }
 
 // ─── BUCS Play scraper ────────────────────────────────────────────────────────
@@ -194,28 +218,10 @@ async function scrapeBucs(browser, leagueUrl, tierLabel, imperialName) {
       })
       .filter((r) => r.pos > 0);
 
-    const imperialIdx = parsed.findIndex((r) =>
-      r.team.toLowerCase().includes(imperialName.toLowerCase())
-    );
-
-    if (imperialIdx === -1) {
-      return parsed.slice(0, 5).map((row, i) => ({
-        ...row,
-        promote:  i === 0 ? true : undefined,
-        relegate: i === 4 ? true : undefined,
-      }));
-    }
-
-    const start = Math.max(0, imperialIdx - 2);
-    const end   = Math.min(parsed.length, imperialIdx + 3);
-    const result = parsed.slice(start, end).map((row) => ({
-      ...row,
-      imperial: row.team.toLowerCase().includes(imperialName.toLowerCase()) ? true : undefined,
-      promote:  row.pos === 1             ? true : undefined,
-      relegate: row.pos === parsed.length ? true : undefined,
-    }));
-
-    setCache(cacheKey, result);
+    // Return the WHOLE table. Only cache it once Imperial's row was found, so a
+    // bad scrape (wrong division, page half-loaded) isn't remembered for 3 hours.
+    const result = flagRows(parsed, imperialName);
+    if (result.some((r) => r.imperial)) setCache(cacheKey, result);
     return result;
   } finally {
     await page.close();
@@ -353,20 +359,12 @@ async function scrapeLusl(browser, luslUrl, divisionLabel, imperialName) {
       })
       .filter((r) => r.pos > 0);
 
-    const imperialIdx = parsed.findIndex((r) =>
-      r.team.toLowerCase().includes(imperialName.toLowerCase())
-    );
-    if (imperialIdx === -1) return [];
+    // If Imperial isn't in this table we've almost certainly scraped the wrong
+    // division, so return nothing rather than show someone else's league.
+    if (!parsed.some((r) => r.team.toLowerCase().includes(imperialName.toLowerCase()))) return [];
 
-    const start = Math.max(0, imperialIdx - 2);
-    const end   = Math.min(parsed.length, imperialIdx + 3);
-    const result = parsed.slice(start, end).map((row) => ({
-      ...row,
-      imperial: row.team.toLowerCase().includes(imperialName.toLowerCase()) ? true : undefined,
-      promote:  row.pos === 1             ? true : undefined,
-      relegate: row.pos === parsed.length ? true : undefined,
-    }));
-
+    // Return the WHOLE table (previously only the 5 rows around Imperial).
+    const result = flagRows(parsed, imperialName);
     setCache(cacheKey, result);
     return result;
   } catch (e) {
@@ -380,18 +378,14 @@ async function scrapeLusl(browser, luslUrl, divisionLabel, imperialName) {
 // ─── Routes ───────────────────────────────────────────────────────────────────
 app.get('/health', (req, res) => res.json({ ok: true }));
 
-app.get('/tables', async (req, res) => {
-  const BUCS_M1_URL = 'https://bucs.playwaze.com/bucs-football-25-26/cdkrbrt3dcl/league-display/leagues/i5p7xbti8m';
-  const BUCS_M2_URL = 'https://bucs.playwaze.com/bucs-football-25-26/cdkrbrt3dcl/league-display/Leagues/cdmdszzjypt';
-  const BUCS_M3_URL = 'https://bucs.playwaze.com/bucs-football-25-26/cdkrbrt3dcl/league-display/Leagues/t39d2f4ffmxn';
+app.get('/links', (req, res) => {
+  res.json({
+    bucs: { m1: BUCS_M1_URL, m2: BUCS_M2_URL, m3: BUCS_M3_URL },
+    lusl: { main: LUSL_URL, lowerLeague: LUSL_LOWER_URL },
+  });
+});
 
-  // All LUSL divisions live on the Playwaze page — navigate there then switch via the dropdown.
-  // The label strings must match the dropdown text exactly (case-insensitive substring match).
-  const LUSL_URL           = 'https://bucs.playwaze.com/lusl-football-25-26/61r2sreurlspdy/league-display/Leagues/smaid3mi5gbr';
-  const LUSL_PREMIER_LABEL = 'Premier Division';
-  const LUSL_DIV1_LABEL    = 'Division 1';
-  const LUSL_DIV3_LABEL    = 'Division 3';
-  const LUSL_lowerLeague_URL     = 'https://bucs.playwaze.com/lusl-football-25-26/61r2sreurlspdy/league-display/Leagues/epbs7hchm7'
+app.get('/tables', async (req, res) => {
   const browser = await launchBrowser();
   const safeScrape = async (fn) => {
     try { return await fn(); }
@@ -405,7 +399,7 @@ app.get('/tables', async (req, res) => {
     const m2Lusl = await safeScrape(() => scrapeLusl(browser, LUSL_URL, LUSL_DIV1_LABEL, 'Imperial Medics'));
     const m3Bucs = await safeScrape(() => scrapeBucs(browser, BUCS_M3_URL, 'SE 7', 'Imperial Medics'));
     const m3Lusl = await safeScrape(() => scrapeLusl(browser, LUSL_URL, LUSL_DIV3_LABEL, 'Imperial Medics'));
-    const m4Lusl = await safeScrape(() => scrapeLusl(browser, LUSL_lowerLeague_URL, LUSL_DIV1_LABEL, 'Imperial Medics'));
+    const m4Lusl = await safeScrape(() => scrapeLusl(browser, LUSL_LOWER_URL, LUSL_DIV1_LABEL, 'Imperial Medics'));
     res.json({
       lastUpdated: new Date().toISOString(),
       teams: [
